@@ -315,6 +315,7 @@ mod tests {
     // }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_debug() {
         let simd_value = Simd256Integer::<u8, 32>::try_from_iter(&mut (0..32).into_iter()).unwrap();
 
