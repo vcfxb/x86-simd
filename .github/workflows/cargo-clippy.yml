@@ -1,0 +1,21 @@
+name: Clippy 
+
+on: ["push", "pull_request"]
+
+# Cancel in-progress runs for previous commits if there are any that haven't completed yet.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clippy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4      
+      # Use stable Rust toolchain 
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Run Clippy
+        run: cargo clippy -- --deny clippy::all --deny warnings

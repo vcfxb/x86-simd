@@ -10,7 +10,9 @@ use core::arch::x86_64::__m256i;
 #[cfg(target_arch = "x86")]
 use core::arch::x86::__m256i;
 
+#[cfg(any(feature = "std", target_feature = "avx2"))]
 use core::any::TypeId;
+
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem::{transmute, transmute_copy};
@@ -202,6 +204,7 @@ impl<S: Simd256Scalar, const LANES: usize> Simd256Integer<S, LANES> {
     /// # Safety
     /// The caller must ensure that AVX2 CPU features are supported, otherwise calling this function will
     /// execute unsupoorted instructions (which is immediate undefined behaviour).
+    #[cfg(any(feature = "std", target_feature = "avx2"))]
     #[target_feature(enable = "avx2")]
     pub unsafe fn avx2_vertical_add(a: Self, b: Self) -> Self {
         // Check that the number of lanes is good (this is a compile-time check triggered by seeing this const).
@@ -230,6 +233,7 @@ impl<S: Simd256Scalar, const LANES: usize> Simd256Integer<S, LANES> {
     /// # Safety
     /// The caller must ensure that AVX2 CPU features are supported, otherwise calling this function will
     /// execute unsupoorted instructions (which is immediate undefined behaviour).
+    #[cfg(any(feature = "std", target_feature = "avx2"))]
     #[target_feature(enable = "avx2")]
     pub unsafe fn avx2_vertical_saturating_add(a: Self, b: Self) -> Self
     where
@@ -285,7 +289,7 @@ impl<S: Simd256Scalar, const LANES: usize> core::ops::Add for Simd256Integer<S, 
         // scalar arrays.
         let mut result: [S; LANES] = [Default::default(); LANES];
         let a = self.to_array();
-        let b = self.to_array();
+        let b = rhs.to_array();
 
         for i in 0..result.len() {
             result[i] = a[i] + b[i];
@@ -318,6 +322,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_avx2_add() {
         assert!(is_x86_feature_detected!("avx2"));
 

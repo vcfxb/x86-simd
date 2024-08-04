@@ -1,0 +1,32 @@
+on: ["push", "pull_request"]
+
+name: coveralls Code Coverage
+
+# Cancel in-progress runs for previous commits if there are any that haven't completed yet.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          override: true
+      - name: Run tests
+        run: cargo test --target $(rustc --version --verbose | grep host | awk '{print $2}') --verbose
+        env:
+          CARGO_INCREMENTAL: '0'
+          RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
+          RUSTDOCFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
+      - name: rust-grcov
+        id: coverage
+        uses: actions-rs/grcov@v0.1
+      - name: Coveralls upload
+        uses: coverallsapp/github-action@master
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path-to-lcov: ${{ steps.coverage.outputs.report }}

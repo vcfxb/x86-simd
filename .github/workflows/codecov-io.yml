@@ -1,0 +1,36 @@
+on: ["push", "pull_request"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Cancel in-progress runs for previous commits if there are any that haven't completed yet.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+name: codecov.io Code Coverage
+jobs:
+  coverage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          override: true
+      
+      - name: Run tests
+        run: cargo test --target $(rustc --version --verbose | grep host | awk '{print $2}') --verbose
+        env:
+          CARGO_INCREMENTAL: '0'
+          RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
+          RUSTDOCFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
+      
+      - name: rust-grcov
+        uses: actions-rs/grcov@v0.1
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v4.0.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: vcfxb/system-memory
