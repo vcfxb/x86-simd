@@ -10,9 +10,7 @@ use core::arch::x86_64::__m256i;
 #[cfg(target_arch = "x86")]
 use core::arch::x86::__m256i;
 
-#[cfg(any(feature = "std", target_feature = "avx2"))]
 use core::any::TypeId;
-
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem::{transmute, transmute_copy};
@@ -402,6 +400,7 @@ impl<S: Simd256Scalar, const LANES: usize> Simd256Integer<S, LANES> {
     /// # Safety
     /// The caller must ensure that AVX2 CPU features are supported, otherwise calling this function will
     /// execute unsupoorted instructions (which is immediate undefined behaviour).
+    #[cfg(any(feature = "std", target_feature = "avx2"))]
     #[target_feature(enable = "avx2")]
     pub unsafe fn avx2_vertical_cmp_eq(a: Self, b: Self) -> Self {
         Self::_MENTION_ME_TO_ASSERT_LANES_MATCH_SIZE;
@@ -427,6 +426,7 @@ impl<S: Simd256Scalar, const LANES: usize> Simd256Integer<S, LANES> {
     /// # Safety
     /// The caller must ensure that AVX2 CPU features are supported, otherwise calling this function will
     /// execute unsupoorted instructions (which is immediate undefined behaviour).
+    #[cfg(any(feature = "std", target_feature = "avx2"))]
     #[target_feature(enable = "avx2")]
     pub unsafe fn avx2_vertical_abs(self) -> Self 
     where S: Simd256IntegerAbs
@@ -555,6 +555,7 @@ mod tests {
     // }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_debug() {
         let simd_value = u8x32::try_from_iter(&mut (0..32).into_iter()).unwrap();
 
