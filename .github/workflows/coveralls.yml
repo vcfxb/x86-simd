@@ -9,6 +9,9 @@ concurrency:
 
 jobs:
   coverage:
+    strategy: 
+      matrix:
+        feature_args: ["-F std", "--no-default-features"]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -17,7 +20,7 @@ jobs:
           toolchain: nightly
           override: true
       - name: Run tests
-        run: cargo test --target $(rustc --version --verbose | grep host | awk '{print $2}') --verbose
+        run: cargo test ${{ matrix.feature_args }}
         env:
           CARGO_INCREMENTAL: '0'
           RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
