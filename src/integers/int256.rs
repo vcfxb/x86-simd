@@ -23,8 +23,13 @@ use crate::sealed::Sealed;
 /// Marker trait implemented on all scalar (primitive) types that can be packed into a [`Simd256Integer`].
 pub trait Simd256Scalar:
     Sealed + Sized + Copy + Add<Self, Output = Self> + AddAssign + Default + 'static
-{
-}
+{}
+
+/// Marker trait implemented on all scalar (primitive) types that support saturating addition AVX2 operations.
+pub trait Simd256SaturatingAdd: Simd256Scalar {}
+
+/// Marker trait on all scalar (primitive) types that support the absolute value AVX2 operations.
+pub trait Simd256IntegerAbs: Simd256Scalar {}
 
 macro_rules! impl_scalars {
     ( $($t:ty $(| $extra:ident )*)* ) => {$(
@@ -42,21 +47,55 @@ impl_scalars! {
 
     i8
     | Simd256SaturatingAdd
+    | Simd256IntegerAbs
 
     u16
     | Simd256SaturatingAdd
 
     i16
     | Simd256SaturatingAdd
+    | Simd256IntegerAbs 
 
     u32
+
     i32
+    | Simd256IntegerAbs
+    
     u64
     i64
 }
 
-/// Marker trait implemented on all scalar (primitive) types that can be
-pub trait Simd256SaturatingAdd: Simd256Scalar {}
+/// 32 [u8] values in a SIMD vector backed by AVX-family operations or a fallback.
+#[allow(non_camel_case_types)]
+pub type u8x32 = Simd256Integer<u8, 32>;
+
+/// 32 [i8] values in a SIMD vector backed by AVX-family operations or a fallback.
+#[allow(non_camel_case_types)]
+pub type i8x32 = Simd256Integer<i8, 32>;
+
+/// 16 [u16] values in a SIMD vector backed by AVX-family operations or a fallback.
+#[allow(non_camel_case_types)]
+pub type u16x16 = Simd256Integer<u16, 16>;
+
+/// 16 [i16] values in a SIMD vector backed by AVX-family operations or a fallback.
+#[allow(non_camel_case_types)]
+pub type i16x16 = Simd256Integer<i16, 16>;
+
+/// 8 [u32] values in a SIMD vector backed by AVX-family operations or a fallback.
+#[allow(non_camel_case_types)]
+pub type u32x8 = Simd256Integer<u32, 8>;
+
+/// 8 [i32] values in a SIMD vector backed by AVX-family operations or a fallback.
+#[allow(non_camel_case_types)]
+pub type i32x8 = Simd256Integer<i32, 8>;
+
+/// 4 [u64] values in a SIMD vector backed by AVX-family operations or a fallback.
+#[allow(non_camel_case_types)]
+pub type u64x4 = Simd256Integer<u64, 4>;
+
+/// 4 [i64] values in a SIMD vector backed by AVX-family operations or a fallback.
+#[allow(non_camel_case_types)]
+pub type i64x4 = Simd256Integer<i64, 4>;
 
 /// This type packs integer data into a 256 bit value and attempts to use AVX family instructions if available for all
 /// operations.
@@ -196,6 +235,12 @@ impl<S: Simd256Scalar, const LANES: usize> Simd256Integer<S, LANES> {
         unsafe { transmute(intrinsic) }
     }
 
+    /// Check if the element type of this [Simd256Integer] (`S`) matches the given type `T` using [`core::any::TypeId`].
+    #[inline(always)]
+    pub fn element_type_is<T: Simd256Scalar>() -> bool {
+        TypeId::of::<S>() == TypeId::of::<T>()
+    }
+
     /// "vertically" Add two SIMD values to eachother using AVX2 instructions.
     ///
     /// "vertical" means each lane of the resulting SIMD value contains the sum of the coresponding
@@ -250,39 +295,231 @@ impl<S: Simd256Scalar, const LANES: usize> Simd256Integer<S, LANES> {
         // I do not love using `TypeId` here but the compiler will optimize it out according to `cargo asm`
         // https://crates.io/crates/cargo-show-asm, so this is how it works for now I suppose.
         let result = match size_of::<S>() {
-            1 if TypeId::of::<S>() == TypeId::of::<u8>() => {
+            1 if Self::element_type_is::<u8>() => {
                 _mm256_adds_epu8(a.inner.avx, b.inner.avx)
             }
-            1 if TypeId::of::<S>() == TypeId::of::<i8>() => {
+            
+            1 if Self::element_type_is::<i8>() => {
                 _mm256_adds_epi8(a.inner.avx, b.inner.avx)
             }
-            2 if TypeId::of::<S>() == TypeId::of::<u16>() => {
+            
+            2 if Self::element_type_is::<u16>() => {
                 _mm256_adds_epu16(a.inner.avx, b.inner.avx)
             }
-            2 if TypeId::of::<S>() == TypeId::of::<i16>() => {
+            
+            2 if Self::element_type_is::<i16>() => {
                 _mm256_adds_epi16(a.inner.avx, b.inner.avx)
             }
+
             _ => crate::unreachable_uncheched_on_release(),
         };
 
         Self::from_intrinsic(result)
     }
+
+    /// Saturating add on two SIMD vectors backed by AVX2 operations or using fallback iterative/scalar instructions.
+    pub fn saturating_add(a: Self, b: Self) -> Self
+    where S: Simd256SaturatingAdd
+    {
+        Self::_MENTION_ME_TO_ASSERT_LANES_MATCH_SIZE;
+
+        #[cfg(target_feature = "avx2")]
+        // SAFETY: We checked if the CPU supports AVX2.
+        return unsafe { Self::avx2_vertical_saturating_add(a, b) };
+
+        #[cfg(feature = "std")]
+        if std::is_x86_feature_detected!("avx2") {
+            // SAFETY: We checked if the CPU supports AVX2.
+            return unsafe { Self::avx2_vertical_saturating_add(a, b) };
+        }
+
+
+        // Hate to use type-of again here but it's safe and gets compiled away on release.
+        // This is all fallback for when avx2 is not available.
+        match size_of::<S>() {
+            1 if Self::element_type_is::<u8>() => {
+                // SAFETY: We have just checked the type.
+                let a = unsafe { transmute::<_, u8x32>(a) }.to_array();
+                let b = unsafe { transmute::<_, u8x32>(b) }.to_array();
+                let mut result: [u8; 32] = [0; 32];
+
+                for i in 0..LANES {
+                    result[i] = u8::saturating_add(a[i], b[i]);
+                }
+
+                unsafe { transmute(result) }
+            }
+
+            1 if Self::element_type_is::<i8>() => {
+                // SAFETY: We have just checked the type.
+                let a = unsafe { transmute::<_, i8x32>(a) }.to_array();
+                let b = unsafe { transmute::<_, i8x32>(b) }.to_array();
+                let mut result: [i8; 32] = [0; 32];
+
+                for i in 0..LANES {
+                    result[i] = i8::saturating_add(a[i], b[i]);
+                }
+
+                unsafe { transmute(result) }
+            }
+            
+            2 if Self::element_type_is::<u16>() => {
+                // SAFETY: We have just checked the type.
+                let a = unsafe { transmute::<_, u16x16>(a) }.to_array();
+                let b = unsafe { transmute::<_, u16x16>(b) }.to_array();
+                let mut result: [u16; 16] = [0; 16];
+
+                for i in 0..LANES {
+                    result[i] = u16::saturating_add(a[i], b[i]);
+                }
+
+                unsafe { transmute(result) }
+            }
+
+            2 if Self::element_type_is::<i16>() => {
+                // SAFETY: We have just checked the type.
+                let a = unsafe { transmute::<_, i16x16>(a) }.to_array();
+                let b = unsafe { transmute::<_, i16x16>(b) }.to_array();
+                let mut result: [i16; 16] = [0; 16];
+
+                for i in 0..LANES {
+                    result[i] = i16::saturating_add(a[i], b[i]);
+                }
+
+                unsafe { transmute(result) }
+            }
+
+            // SAFETY: We checked all types that implement AVX2-backed saturating addition, and that trait is Sealed.
+            _ => unsafe { crate::unreachable_uncheched_on_release() }
+        }
+    }
+
+
+    /// Compare two SIMD vectors for equality of elements vertically. Lanes of the result are defined as so: 
+    /// if the elements of the coresponding lane of each of the input vectors are equal, then the output vector will 
+    /// have all `1` bits in that lane. If not equal, then all `0` bits.
+    /// 
+    /// # Safety
+    /// The caller must ensure that AVX2 CPU features are supported, otherwise calling this function will
+    /// execute unsupoorted instructions (which is immediate undefined behaviour).
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn avx2_vertical_cmp_eq(a: Self, b: Self) -> Self {
+        Self::_MENTION_ME_TO_ASSERT_LANES_MATCH_SIZE;
+
+        #[cfg(target_arch = "x86")]
+        use core::arch::x86::*;
+        #[cfg(target_arch = "x86_64")]
+        use core::arch::x86_64::*;
+        
+        let result = match size_of::<S>() {
+            1 => _mm256_cmpeq_epi8(a.inner.avx, b.inner.avx),
+            2 => _mm256_cmpeq_epi16(a.inner.avx, b.inner.avx),
+            4 => _mm256_cmpeq_epi32(a.inner.avx, b.inner.avx),
+            8 => _mm256_cmpeq_epi64(a.inner.avx, b.inner.avx),
+            _ => crate::unreachable_uncheched_on_release(),
+        };
+
+        Self::from_intrinsic(result)
+    }
+
+    /// Get the absolute value of each lane of this SIMD vector using AVX2 absolute value intrinsics.
+    /// 
+    /// # Safety
+    /// The caller must ensure that AVX2 CPU features are supported, otherwise calling this function will
+    /// execute unsupoorted instructions (which is immediate undefined behaviour).
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn avx2_vertical_abs(self) -> Self 
+    where S: Simd256IntegerAbs
+    {
+        Self::_MENTION_ME_TO_ASSERT_LANES_MATCH_SIZE;
+
+        #[cfg(target_arch = "x86")]
+        use core::arch::x86::*;
+        #[cfg(target_arch = "x86_64")]
+        use core::arch::x86_64::*;
+        
+        let result = match size_of::<S>() {
+            1 => _mm256_abs_epi8(self.inner.avx),
+            2 => _mm256_abs_epi16(self.inner.avx),
+            4 => _mm256_abs_epi32(self.inner.avx),
+            _ => crate::unreachable_uncheched_on_release(),
+        };
+
+        Self::from_intrinsic(result)
+    }
+
+    /// Return a SIMD vector containing the absolute value of all of the elements of this SIMD vector.
+    pub fn abs(self) -> Self
+    where S: Simd256IntegerAbs {
+        Self::_MENTION_ME_TO_ASSERT_LANES_MATCH_SIZE;
+
+        #[cfg(target_feature = "avx2")]
+        // SAFETY: We checked if the CPU supports AVX2.
+        return unsafe { Self::avx2_vertical_abs(self) };
+
+        #[cfg(feature = "std")]
+        if std::is_x86_feature_detected!("avx2") {
+            // SAFETY: We checked if the CPU supports AVX2.
+            return unsafe { Self::avx2_vertical_abs(self) };
+        }
+
+        // Fallback if AVX2 is not supported.
+        // SAFETY: We match on the size of `S` and know all the types that implement the sealed trait.
+        match size_of::<S>() {
+            1 => unsafe { 
+                let mut array = transmute::<_, i8x32>(self).to_array();
+
+                for element in &mut array {
+                    *element = i8::abs(*element);
+                }
+
+                transmute(array)
+            }
+
+            2 => unsafe { 
+                let mut array = transmute::<_, i16x16>(self).to_array();
+
+                for element in &mut array {
+                    *element = i16::abs(*element);
+                }
+
+                transmute(array)
+            }
+
+            
+            4 => unsafe { 
+                let mut array = transmute::<_, i32x8>(self).to_array();
+
+                for element in &mut array {
+                    *element = i32::abs(*element);
+                }
+
+                transmute(array)
+            }
+
+            _ => unsafe { crate::unreachable_uncheched_on_release() }
+        }
+    }
+
+
 }
 
 impl<S: Simd256Scalar, const LANES: usize> core::ops::Add for Simd256Integer<S, LANES> {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self::Output {
-        // First attempt to use avx2 based SIMD add.
+        Self::_MENTION_ME_TO_ASSERT_LANES_MATCH_SIZE;
+    
+        #[cfg(target_feature = "avx2")]
+        // SAFETY: We statically check if the CPU supports AVX2.
+        return unsafe { Simd256Integer::avx2_vertical_add(self, rhs) };
+
+        // Attempt to use avx2 based SIMD add.
         #[cfg(feature = "std")]
         if std::is_x86_feature_detected!("avx2") {
             // SAFETY: We just checked if the CPU supports AVX2.
             return unsafe { Simd256Integer::avx2_vertical_add(self, rhs) };
         }
-
-        #[cfg(target_feature = "avx2")]
-        // SAFETY: We statically check if the CPU supports AVX2.
-        return unsafe { Simd256Integer::avx2_vertical_add(self, rhs) };
 
         // If neither of the above has returned already, use a fallback.
         // This is fully safe, thanks to guarantees made elsewhere, and is just an iterative vertical add across two
@@ -299,14 +536,17 @@ impl<S: Simd256Scalar, const LANES: usize> core::ops::Add for Simd256Integer<S, 
     }
 }
 
-// #[target_feature(enable = "avx2")]
-// pub unsafe fn avx_sadd_i16(a: Simd256Integer<i16, 16>, b: Simd256Integer<i16, 16>) -> Simd256Integer<i16, 16> {
-//     Simd256Integer::<i16, 16>::avx2_vertical_saturating_add(a, b)
+// pub fn avx_sadd_i16(a: Simd256Integer<i16, 16>, b: Simd256Integer<i16, 16>) -> Simd256Integer<i16, 16> {
+//     Simd256Integer::<i16, 16>::saturating_add(a, b)
 // }
 
 #[cfg(test)]
 mod tests {
-    use super::Simd256Integer;
+    use core::u16;
+
+    use super::u8x32;
+    use super::u16x16;
+    use super::i16x16;
 
     // This test should fail to compile if you un-comment it.
     // #[test]
@@ -315,23 +555,33 @@ mod tests {
     // }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_debug() {
-        let simd_value = Simd256Integer::<u8, 32>::try_from_iter(&mut (0..32).into_iter()).unwrap();
+        let simd_value = u8x32::try_from_iter(&mut (0..32).into_iter()).unwrap();
 
         println!("{simd_value:#x?}");
     }
 
     #[test]
-    #[cfg(feature = "std")]
-    fn test_avx2_add() {
-        assert!(is_x86_feature_detected!("avx2"));
+    fn test_add() {
+        let simd_10x16 = u16x16::splat(10);
+        let simd_12x16 = u16x16::splat(12);
 
-        let simd_10x16 = Simd256Integer::<u16, 16>::splat(10);
-        let simd_12x16 = Simd256Integer::<u16, 16>::splat(12);
-
-        let added = unsafe { Simd256Integer::avx2_vertical_add(simd_10x16, simd_12x16) };
+        let added =  simd_10x16 + simd_12x16;
 
         assert_eq!(added.to_array(), [22; 16]);
+    }
+
+    #[test]
+    fn test_saturating_add() {
+        let simd_max = u16x16::splat(u16::MAX);
+
+        assert_eq!(u16x16::saturating_add(simd_max, simd_max).as_array_ref(), simd_max.as_array_ref());
+    }
+
+    #[test]
+    fn test_abs() {
+        let simd_neg1 = i16x16::splat(-1);
+
+        assert_eq!(simd_neg1.abs().to_array(), [1; 16]);
     }
 }

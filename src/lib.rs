@@ -3,12 +3,18 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(clippy::cast_possible_truncation)]
 #![warn(missing_docs)]
+
 // Allow using Sealed trait bounds to limit how much people can shoot themselves in the foot with this crate.
 #![allow(private_bounds)]
+
 // Allow unreachable code as parts of this library (especially fall-back code) will become unreachable when
 // certain compiler flags are enabled.
 #![allow(unreachable_code)]
+
+#![allow(clippy::missing_transmute_annotations)]
+
 #![cfg_attr(not(feature = "std"), no_std)]
+
 // Compiler directive to get docs.rs (which uses the nightly version of the rust compiler) to show
 // info about feature required for various modules and functionality.
 //

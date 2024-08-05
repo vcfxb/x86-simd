@@ -1,6 +1,6 @@
 [package]
 name = "x86-simd"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 author = ["Venus Xeon-Blonde <venus@venusblon.de>"]
 description = "Safe interfaces to x86 and x86_64 SIMD intrinsics"
