@@ -15,8 +15,6 @@ use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem::{transmute, transmute_copy};
 use core::ops::{Add, AddAssign, Not};
-use core::u64;
-
 use crate::sealed::Sealed;
 
 /// Marker trait implemented on all scalar (primitive) types that can be packed into a [`Simd256Integer`].
@@ -470,6 +468,7 @@ impl<S: Simd256Scalar, const LANES: usize> Simd256Integer<S, LANES> {
         // If we don't have AVX2, fallback.
         let mut result = [S::ZERO; LANES];
 
+        #[allow(clippy::needless_range_loop)]
         for i in 0..LANES {
             if a.as_array_ref()[i] == b.as_array_ref()[i] {
                 // Use a bitwise not here to get 0xFF.
