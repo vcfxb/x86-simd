@@ -1,12 +1,19 @@
-use std::hint::black_box;
+use std::{hint::black_box, mem::transmute};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rand::Rng;
 use x86_simd::integers::int256::u16x16;
+use core::arch::x86_64::*;
 
 #[inline(never)]
 pub fn simd_vertical_add(a: u16x16, b: u16x16) -> u16x16 {    
-    // SAFETY: Assume that we have AVX2 -- it should be checked outside this benchmark function.
-    unsafe { u16x16::avx2_vertical_add(a, b) }
+    // // SAFETY: Assume that we have AVX2 -- it should be checked outside this benchmark function.
+    // unsafe { u16x16::avx2_vertical_add(a, b) }
+
+    // :(( why on earth are two SSE2 vector adds faster than 1 AVX2 vector add on my machine???
+    let a = unsafe { transmute::<_, [__m128i; 2]>(a) };
+    let b = unsafe { transmute::<_, [__m128i; 2]>(b) };
+
+    return unsafe { transmute([_mm_add_epi16(a[0], b[0]), _mm_add_epi16(a[1], b[1])]) };
 }
 
 #[inline(never)]
