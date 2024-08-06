@@ -14,14 +14,25 @@ use core::any::TypeId;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem::{transmute, transmute_copy};
-use core::ops::{Add, AddAssign};
+use core::ops::{Add, AddAssign, Not};
+use core::u64;
 
 use crate::sealed::Sealed;
 
 /// Marker trait implemented on all scalar (primitive) types that can be packed into a [`Simd256Integer`].
-pub trait Simd256Scalar:
-    Sealed + Sized + Copy + Add<Self, Output = Self> + AddAssign + Default + 'static
-{}
+pub trait Simd256Scalar: Sealed 
+    + Sized 
+    + Copy 
+    + Add<Self, Output = Self> 
+    + AddAssign 
+    + Default 
+    + Not<Output = Self>
+    + PartialEq
+    + 'static
+{
+    /// A value of this scalar type with all bits set to `0`.
+    const ZERO: Self;
+}
 
 /// Marker trait implemented on all scalar (primitive) types that support saturating addition AVX2 operations.
 pub trait Simd256SaturatingAdd: Simd256Scalar {}
@@ -31,7 +42,9 @@ pub trait Simd256IntegerAbs: Simd256Scalar {}
 
 macro_rules! impl_scalars {
     ( $($t:ty $(| $extra:ident )*)* ) => {$(
-            impl Simd256Scalar for $t {}
+            impl Simd256Scalar for $t {
+                const ZERO: $t = 0;
+            }
 
             $(
                 impl $extra for $t {}
@@ -112,19 +125,23 @@ pub struct Simd256Integer<S: Simd256Scalar, const LANES: usize> {
 /// The internal representation for 256-bit integer data SIMD values used by [Simd256Integer].
 #[derive(Clone, Copy)]
 pub union Simd256IntegerInner {
-    /// If AVX is available, this field of the union will be active and contain am [__m256i] value.
+    /// If the AVX CPU feature is available, this field of the union will be active and contain am [__m256i] value.
     #[cfg(any(feature = "std", target_feature = "avx"))]
     pub avx: __m256i,
 
-    /// Fallback representation if we cannot confirm that AVX instructions are available.
-    /// This will be slower than the AVX version, but at least still mathematically correct.
+    /// Fallback representation if we cannot confirm that AVX or AVX2 instructions are available, depending on the 
+    /// function (some need specifically AVX or AVX2).
+    /// 
+    /// This may be slower than the AVX/AVX2 version (depending on how the compiler optimizes things), 
+    /// but at least still mathematically correct.
     pub fallback: [u8; size_of::<__m256i>() / size_of::<u8>()],
 }
 
 impl Debug for Simd256IntegerInner {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        #[cfg(feature = "std")]
-        if std::is_x86_feature_detected!("avx") {
+        // If std is disabled, try to use compiler flags to determine AVX support.
+        #[cfg(all(not(feature = "std"), target_feature = "avx2"))]
+        {
             return f
                 .debug_struct(stringify!(Simd256IntegerInner))
                 // SAFETY: We just checked that AVX is supported -- if it is, we are using it.
@@ -132,9 +149,9 @@ impl Debug for Simd256IntegerInner {
                 .finish();
         }
 
-        // If std is disabled, try to use compiler flags to determine AVX support.
-        #[cfg(all(not(feature = "std"), target_feature = "avx"))]
-        {
+        // If we have libstd, we can just ask the CPU if it supports AVX2.
+        #[cfg(feature = "std")]
+        if std::is_x86_feature_detected!("avx2") {
             return f
                 .debug_struct(stringify!(Simd256IntegerInner))
                 // SAFETY: We just checked that AVX is supported -- if it is, we are using it.
@@ -190,9 +207,8 @@ impl<S: Simd256Scalar, const LANES: usize> Simd256Integer<S, LANES> {
         // Check that the number of lanes is good (this is a compile-time check triggered by seeing this const).
         Self::_MENTION_ME_TO_ASSERT_LANES_MATCH_SIZE;
 
-        // We can use default here since it's always overwritten (so it doesn't matter what it is) and it also should
-        // be zero for all the scalar types this is Sealed to.
-        let mut array: [S; LANES] = [Default::default(); LANES];
+        // Use zero here, despite it always being overwritten.
+        let mut array: [S; LANES] = [S::ZERO; LANES];
 
         #[allow(clippy::needless_range_loop)]
         for i in 0..LANES {
@@ -224,6 +240,20 @@ impl<S: Simd256Scalar, const LANES: usize> Simd256Integer<S, LANES> {
     }
 
     /// Wrap a given intrinsic value with this type.
+    /// 
+    /// To retrieve the intrinsic underlying this value (the reverse of this operation), 
+    /// use [Simd256Integer::inner] and [Simd256IntegerInner::avx]:
+    /// ```rust, ignore
+    /// use x86_simd::integers::int256::{Simd256Integer, Simd256IntegerInner, u64x4};
+    /// 
+    /// let simd_value = u64x4::splat(0);
+    /// 
+    /// if std::is_x86_feature_detected!("avx2") {
+    ///     // SAFETY: We have confirmed that this field of the inner union is active by checking that the 
+    ///     // AVX2 CPU feature is available.
+    ///     let intrinsic = unsafe { simd_value.inner.avx };
+    /// }
+    /// ```
     #[inline(always)]
     pub const fn from_intrinsic(intrinsic: __m256i) -> Self {
         // Check that the number of lanes is good (this is a compile-time check triggered by seeing this const).
@@ -394,8 +424,9 @@ impl<S: Simd256Scalar, const LANES: usize> Simd256Integer<S, LANES> {
 
 
     /// Compare two SIMD vectors for equality of elements vertically. Lanes of the result are defined as so: 
-    /// if the elements of the coresponding lane of each of the input vectors are equal, then the output vector will 
-    /// have all `1` bits in that lane. If not equal, then all `0` bits.
+    /// If the elements of the coresponding lane of each of the input vectors are equal, then the output vector will 
+    /// have all `1` bits in that lane (e.g. an `0xFF` value in the lane for [u8x32] or [i8x32]). 
+    /// If not equal, then all `0` bits.
     /// 
     /// # Safety
     /// The caller must ensure that AVX2 CPU features are supported, otherwise calling this function will
@@ -419,6 +450,34 @@ impl<S: Simd256Scalar, const LANES: usize> Simd256Integer<S, LANES> {
         };
 
         Self::from_intrinsic(result)
+    }
+
+    /// Compare the elements/lanes of two SIMD vectors for equality, setting each lane of the returned SIMD vector 
+    /// to all `1` bits if the coresponding elements of the input vectors are equal, and all `0` bits otherwise.
+    pub fn vertical_cmp_eq(a: Self, b: Self) -> Self {
+        Self::_MENTION_ME_TO_ASSERT_LANES_MATCH_SIZE;
+
+        #[cfg(target_feature = "avx2")]
+        // SAFETY: We checked if the CPU supports AVX2.
+        return unsafe { Self::avx2_vertical_cmp_eq(a, b) };
+
+        #[cfg(feature = "std")]
+        if std::is_x86_feature_detected!("avx2") {
+            // SAFETY: We checked if the CPU supports AVX2.
+            return unsafe { Self::avx2_vertical_cmp_eq(a, b) };
+        }
+
+        // If we don't have AVX2, fallback.
+        let mut result = [S::ZERO; LANES];
+
+        for i in 0..LANES {
+            if a.as_array_ref()[i] == b.as_array_ref()[i] {
+                // Use a bitwise not here to get 0xFF.
+                result[i] = !S::ZERO;
+            }
+        }
+
+        Self::from_array(result)
     }
 
     /// Get the absolute value of each lane of this SIMD vector using AVX2 absolute value intrinsics.
@@ -524,7 +583,7 @@ impl<S: Simd256Scalar, const LANES: usize> core::ops::Add for Simd256Integer<S, 
         // If neither of the above has returned already, use a fallback.
         // This is fully safe, thanks to guarantees made elsewhere, and is just an iterative vertical add across two
         // scalar arrays.
-        let mut result: [S; LANES] = [Default::default(); LANES];
+        let mut result: [S; LANES] = [S::ZERO; LANES];
         let a = self.to_array();
         let b = rhs.to_array();
 
@@ -536,6 +595,12 @@ impl<S: Simd256Scalar, const LANES: usize> core::ops::Add for Simd256Integer<S, 
     }
 }
 
+// impl<S: Simd256Scalar, const LANES: usize> PartialEq for Simd256Integer<S, LANES> {
+//     fn eq(&self, other: &Self) -> bool {
+//         self.inner == other.inner
+//     }
+// }
+
 // pub fn avx_sadd_i16(a: Simd256Integer<i16, 16>, b: Simd256Integer<i16, 16>) -> Simd256Integer<i16, 16> {
 //     Simd256Integer::<i16, 16>::saturating_add(a, b)
 // }
@@ -544,6 +609,7 @@ impl<S: Simd256Scalar, const LANES: usize> core::ops::Add for Simd256Integer<S, 
 mod tests {
     use core::u16;
 
+    use super::u64x4;
     use super::u8x32;
     use super::u16x16;
     use super::i16x16;
@@ -584,5 +650,13 @@ mod tests {
         let simd_neg1 = i16x16::splat(-1);
 
         assert_eq!(simd_neg1.abs().to_array(), [1; 16]);
+    }
+
+    #[test]
+    fn test_vertical_cmp_eq() {
+        let simd_a = u64x4::from_array([10, 20, 30, 40]);
+        let simd_b = u64x4::from_array([0, 20, 40, 60]);
+
+        assert_eq!(u64x4::vertical_cmp_eq(simd_a, simd_b).to_array(), [0, 0xFFFF_FFFF_FFFF_FFFF, 0, 0]);
     }
 }
