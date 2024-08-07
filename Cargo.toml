@@ -21,9 +21,5 @@ std = []
 rustc_version = "0.4.0"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+# criterion = { version = "0.5", features = ["html_reports"] }
 rand = "0.8.5"
-
-[[bench]]
-name = "simd_sum"
-harness = false
