@@ -559,7 +559,63 @@ impl<S: Simd256Scalar, const LANES: usize> Simd256Integer<S, LANES> {
         }
     }
 
+    /// Load a SIMD Vector from the given pointer using AVX intrinsics.
+    /// 
+    /// # Safety
+    /// The caller must ensure that AVX CPU features are supported, otherwise calling this function will
+    /// execute unsupoorted instructions (which is immediate undefined behaviour).
+    #[cfg(any(feature = "std", target_feature = "avx"))]
+    #[target_feature(enable = "avx")]
+    pub unsafe fn avx_load(ptr: *const __m256i) -> Self {
+        Self::_MENTION_ME_TO_ASSERT_LANES_MATCH_SIZE;
 
+        #[cfg(target_arch = "x86")]
+        use core::arch::x86::*;
+        #[cfg(target_arch = "x86_64")]
+        use core::arch::x86_64::*;
+
+        // Just call the intrinsic directly and transmute to self, since it returns a SIMD vector
+        // and is the same for all element types and lane counts.
+        transmute(_mm256_loadu_si256(ptr))
+    }
+
+    /// Read `LANES` items from the beginning of the given `slice` into a SIMD vector.
+    /// 
+    /// # Panics
+    /// This function will panic if the length of the slice is less than `LANES`.
+    pub fn load_from_slice(slice: &[S]) -> Self {
+        Self::try_load_from_slice(slice)
+            .expect("slice must contain enough elements to load into a SIMD vector")
+    }
+
+    /// Read `LANES` items from the beginning of the given `slice` into a SIMD vector. 
+    /// Returns [`None`] if the slice is not large enough.
+    pub fn try_load_from_slice(slice: &[S]) -> Option<Self> {
+        Self::_MENTION_ME_TO_ASSERT_LANES_MATCH_SIZE;
+
+        if slice.len() < LANES {
+            return None;
+        }
+
+        // Use raw pointer casting to get a const pointer to the slice that we can pass to the intrinsic.
+        #[cfg(any(feature = "std", target_feature = "avx"))]
+        let cptr = slice as *const [S] as *const () as *const __m256i;
+
+        #[cfg(target_feature = "avx")]
+        // SAFETY: We checked if the CPU supports AVX.
+        return Some(unsafe { Self::avx_load(cptr) });
+
+        #[cfg(feature = "std")]
+        if std::is_x86_feature_detected!("avx") {
+            // SAFETY: We checked if the CPU supports AVX.
+            return Some(unsafe { Self::avx_load(cptr) });
+        }
+
+        // No std or avx -- fallback to memcpy.
+        let mut result = [S::ZERO; LANES];
+        result[..LANES].copy_from_slice(&slice[..LANES]);
+        Some(Self::from_array(result))
+    }
 }
 
 impl<S: Simd256Scalar, const LANES: usize> core::ops::Add for Simd256Integer<S, LANES> {
@@ -608,6 +664,10 @@ impl<S: Simd256Scalar, const LANES: usize> core::ops::Add for Simd256Integer<S, 
 mod tests {
     use core::u16;
 
+    use crate::integers::int256::i64x4;
+
+    use super::i32x8;
+    use super::i8x32;
     use super::u64x4;
     use super::u8x32;
     use super::u16x16;
@@ -657,5 +717,21 @@ mod tests {
         let simd_b = u64x4::from_array([0, 20, 40, 60]);
 
         assert_eq!(u64x4::vertical_cmp_eq(simd_a, simd_b).to_array(), [0, 0xFFFF_FFFF_FFFF_FFFF, 0, 0]);
+    }
+
+    #[test]
+    fn test_try_load_fails() {
+        assert!(i8x32::try_load_from_slice(&[0;10]).is_none());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_load_panics() {
+        i32x8::load_from_slice(&[0; 1]);
+    }
+
+    #[test]
+    fn test_load() {
+        assert_eq!(i64x4::load_from_slice(&[100; 4]).to_array(), [100; 4]);
     }
 }
