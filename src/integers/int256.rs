@@ -650,6 +650,14 @@ impl<S: Simd256Scalar, const LANES: usize> core::ops::Add for Simd256Integer<S, 
     }
 }
 
+impl<S: Simd256Scalar, const LANES: usize> PartialEq for Simd256Integer<S, LANES> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_array_ref() == other.as_array_ref()
+    }
+}
+
+impl<S: Simd256Scalar, const LANES: usize> Eq for Simd256Integer<S, LANES> {}
+
 // impl<S: Simd256Scalar, const LANES: usize> PartialEq for Simd256Integer<S, LANES> {
 //     fn eq(&self, other: &Self) -> bool {
 //         self.inner == other.inner
